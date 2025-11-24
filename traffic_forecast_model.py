@@ -1,11 +1,7 @@
 """
 Traffic Volume Prediction from Weather Forecasts
-
-Given two weather forecast texts (A and B), predict which will have more traffic
-and by what percentage.
-
-Dataset: Metro Interstate Traffic Volume (Minneapolis-St Paul, MN)
-Source: https://archive.ics.uci.edu/ml/machine-learning-databases/00492/Metro_Interstate_Traffic_Volume.csv.gz
+Given two weather forecasts (A and B), predict which has more traffic and by what %.
+Dataset: Metro Interstate Traffic Volume (UCI ML Repository)
 """
 
 import pandas as pd
@@ -26,11 +22,7 @@ warnings.filterwarnings('ignore')
 sns.set_style("whitegrid")
 plt.rcParams['figure.figsize'] = (12, 6)
 
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
+# Configuration
 DATA_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/00492/Metro_Interstate_Traffic_Volume.csv.gz"
 BERT_MODEL = "distilbert-base-uncased"
 MODEL_PATH = "traffic_model.pkl"
@@ -50,11 +42,7 @@ OPENAI_MAX_TOKENS = 150
 PLOT_DIR = "plots"
 os.makedirs(PLOT_DIR, exist_ok=True)
 
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
+# Helper Functions
 def kelvin_to_fahrenheit(k):
     """Convert Kelvin to Fahrenheit"""
     return (k - 273.15) * 9/5 + 32
@@ -98,19 +86,9 @@ def mode_agg(series):
     modes = series.mode()
     return modes.iloc[0] if not modes.empty else np.nan
 
-
-# =============================================================================
-# DATA LOADING & PROCESSING
-# =============================================================================
-
+# Data Loading & Processing
 def load_and_aggregate_data(data_path=None):
-    """
-    Load traffic data and aggregate to daily level.
-
-    Returns:
-        daily_df: DataFrame with daily aggregated data
-        hourly_df: Original hourly DataFrame (for LLM generation)
-    """
+    """Load traffic data and aggregate to daily level"""
     if data_path is None:
         data_path = DATA_URL
 
@@ -149,18 +127,7 @@ def load_and_aggregate_data(data_path=None):
 
 
 def generate_llm_forecasts(daily_df, hourly_df, api_key):
-    """
-    Generate detailed LLM-based weather forecasts using OpenAI.
-    This matches the notebook implementation in cell 4.
-
-    Args:
-        daily_df: DataFrame with daily aggregated data
-        hourly_df: DataFrame with hourly data
-        api_key: OpenAI API key
-
-    Returns:
-        daily_df with 'llm_forecast_text' column added
-    """
+    """Generate LLM-based weather forecasts using OpenAI"""
     import openai
 
     print("Generating OpenAI LLM daily forecasts (this may take time)...")
@@ -229,9 +196,7 @@ def generate_llm_forecasts(daily_df, hourly_df, api_key):
 
 
 def load_or_generate_data():
-    """
-    Load pre-existing daily data with LLM forecasts, or generate if not found.
-    """
+    """Load pre-existing daily data with LLM forecasts, or generate if not found"""
     if os.path.exists(DAILY_DATA_CSV):
         print(f"Loading pre-generated data from {DAILY_DATA_CSV}...")
         daily_df = pd.read_csv(DAILY_DATA_CSV)
@@ -239,16 +204,11 @@ def load_or_generate_data():
         print(f"Loaded {len(daily_df)} daily records with LLM forecasts\n")
         return daily_df
     else:
-        print(f"{DAILY_DATA_CSV} not found.")
-        print("Need to generate LLM forecasts...")
-
-        # Check for OpenAI API key
+        print(f"{DAILY_DATA_CSV} not found. Need to generate LLM forecasts...")
         api_key = os.environ.get('OPENAI_API_KEY')
         if not api_key:
-            print("\nERROR: OPENAI_API_KEY environment variable not set.")
-            print("Please set it: export OPENAI_API_KEY='your-key-here'")
-            print("\nOr place daily_df_llm_predictions.csv in the current directory.")
-            raise ValueError("Missing OPENAI_API_KEY and no pre-generated data found")
+            print("ERROR: OPENAI_API_KEY not set. Export it or provide daily_df_llm_predictions.csv")
+            raise ValueError("Missing OPENAI_API_KEY and no pre-generated data")
 
         # Load and aggregate data
         daily_df, hourly_df = load_and_aggregate_data()
@@ -258,56 +218,35 @@ def load_or_generate_data():
 
         return daily_df
 
-
-# =============================================================================
-# MODEL: BERT EMBEDDINGS + RIDGE REGRESSION
-# =============================================================================
-
+# BERT Embeddings + Ridge Regression
 def setup_bert():
     """Load BERT model and tokenizer with CUDA optimization"""
     print("Loading DistilBERT model...")
     tokenizer = DistilBertTokenizer.from_pretrained(BERT_MODEL)
     model = DistilBertModel.from_pretrained(BERT_MODEL)
-
-    # Setup device - use CUDA if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Display device information
     if torch.cuda.is_available():
-        print(f"CUDA is available!")
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"CUDA Version: {torch.version.cuda}")
-        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
     else:
-        print("CUDA not available, using CPU")
+        print("Using CPU")
 
-    # Move model to device
-    model.to(device)
-
-    # Set model to evaluation mode for inference
-    model.eval()
-
-    print(f"Using device: {device}\n")
+    model.to(device).eval()
+    print()
     return tokenizer, model, device
 
 
 def get_embeddings(text_list, tokenizer, model, device):
-    """Convert texts to BERT embeddings with CUDA optimization"""
+    """Convert texts to BERT embeddings"""
     inputs = tokenizer(text_list, padding=True, truncation=True,
                       max_length=MAX_TOKEN_LENGTH, return_tensors="pt")
-
-    # Move inputs to device (GPU if available)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # Disable gradient computation for inference (saves memory and speeds up)
     with torch.no_grad():
         outputs = model(**inputs)
 
-    # Use CLS token as sentence representation
-    # Move to CPU before converting to numpy
     cls_embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
 
-    # Clear CUDA cache if using GPU to prevent memory buildup
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
@@ -323,19 +262,9 @@ def generate_embeddings_batched(texts, tokenizer, model, device, batch_size=BATC
         embeddings.append(batch_emb)
     return np.vstack(embeddings)
 
-
-# =============================================================================
-# VISUALIZATION FUNCTIONS
-# =============================================================================
-
+# Visualization Functions
 def plot_training_curves(metrics, save_path=None):
-    """
-    Plot training, validation, and test RMSE to check for overfitting.
-
-    Args:
-        metrics: Dictionary with train_rmse, val_rmse, test_rmse
-        save_path: Path to save the plot
-    """
+    """Plot train/val/test RMSE to check for overfitting"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     # Plot 1: Bar chart of RMSE
@@ -391,15 +320,7 @@ def plot_training_curves(metrics, save_path=None):
 
 
 def plot_predictions(y_true, y_pred, dataset_name='Test', save_path=None):
-    """
-    Plot actual vs predicted values and residuals.
-
-    Args:
-        y_true: True values
-        y_pred: Predicted values
-        dataset_name: Name of dataset (Train/Val/Test)
-        save_path: Path to save the plot
-    """
+    """Plot actual vs predicted values and residuals"""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     # Plot 1: Actual vs Predicted
@@ -444,15 +365,7 @@ def plot_predictions(y_true, y_pred, dataset_name='Test', save_path=None):
 
 
 def plot_alpha_comparison(alphas, train_rmses, val_rmses, save_path=None):
-    """
-    Plot RMSE vs Ridge alpha to help detect overfitting.
-
-    Args:
-        alphas: List of alpha values tested
-        train_rmses: Training RMSE for each alpha
-        val_rmses: Validation RMSE for each alpha
-        save_path: Path to save the plot
-    """
+    """Plot RMSE vs Ridge alpha"""
     plt.figure(figsize=(10, 6))
 
     plt.plot(alphas, train_rmses, marker='o', linewidth=2, markersize=8,
@@ -484,39 +397,23 @@ def plot_alpha_comparison(alphas, train_rmses, val_rmses, save_path=None):
 
 
 def train_model(daily_df, tokenizer, model, device):
-    """
-    Train traffic prediction model with validation set and overfitting detection.
-
-    Args:
-        daily_df: DataFrame with daily data (must have 'forecast_text' and 'llm_forecast_text')
-        tokenizer, model, device: BERT components
-
-    Returns:
-        regressor: Trained Ridge regression model
-        metrics: Dictionary with performance metrics
-    """
+    """Train traffic prediction model with validation and overfitting detection"""
     print("="*60)
     print("TRAINING MODEL WITH VALIDATION")
     print("="*60 + "\n")
 
-    # Concatenate simple and LLM forecast texts BEFORE embedding
     print("Combining simple and LLM forecast texts...")
     texts_simple = daily_df['forecast_text'].fillna("").tolist()
     texts_llm = daily_df['llm_forecast_text'].fillna("").tolist()
-
-    # Concatenate both texts into single strings
     combined_texts = [f"{simple} {llm}" for simple, llm in zip(texts_simple, texts_llm)]
     print(f"Combined {len(combined_texts)} text pairs\n")
 
-    # Generate embeddings from combined texts
-    print("Generating embeddings from combined forecast texts...")
+    print("Generating embeddings...")
     X = generate_embeddings_batched(combined_texts, tokenizer, model, device)
-    print(f"Combined embeddings shape: {X.shape}\n")
+    print(f"Embeddings shape: {X.shape}\n")
 
-    # Target variable
     y = daily_df['normalized_traffic_volume'].values
 
-    # Split data: train / val / test
     n = len(daily_df)
     train_idx = int(n * TRAIN_SPLIT)
     val_idx = int(n * (TRAIN_SPLIT + VAL_SPLIT))
@@ -530,44 +427,27 @@ def train_model(daily_df, tokenizer, model, device):
     X_test = X[val_idx:]
     y_test = y[val_idx:]
 
-    print(f"Training set:   {len(X_train)} days ({TRAIN_SPLIT*100:.0f}%)")
-    print(f"Validation set: {len(X_val)} days ({VAL_SPLIT*100:.0f}%)")
-    print(f"Test set:       {len(X_test)} days ({TEST_SPLIT*100:.0f}%)\n")
+    print(f"Split: {len(X_train)} train, {len(X_val)} val, {len(X_test)} test\n")
 
-    # Experiment with different alpha values to find best regularization
-    print("Finding best Ridge alpha (regularization strength)...")
+    print("Finding best Ridge alpha...")
     alphas = [0.01, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
-    train_rmses = []
-    val_rmses = []
+    train_rmses, val_rmses = [], []
 
     for alpha in alphas:
-        reg = Ridge(alpha=alpha)
-        reg.fit(X_train, y_train)
+        reg = Ridge(alpha=alpha).fit(X_train, y_train)
+        train_rmses.append(np.sqrt(mean_squared_error(y_train, reg.predict(X_train))))
+        val_rmses.append(np.sqrt(mean_squared_error(y_val, reg.predict(X_val))))
 
-        train_pred = reg.predict(X_train)
-        val_pred = reg.predict(X_val)
-
-        train_rmse = np.sqrt(mean_squared_error(y_train, train_pred))
-        val_rmse = np.sqrt(mean_squared_error(y_val, val_pred))
-
-        train_rmses.append(train_rmse)
-        val_rmses.append(val_rmse)
-
-    # Find best alpha (lowest validation RMSE)
-    best_idx = np.argmin(val_rmses)
+    valid_indices = [i for i, (t, v) in enumerate(zip(train_rmses, val_rmses)) if v >= t]
+    best_idx = min(valid_indices, key=lambda i: val_rmses[i]) if valid_indices else np.argmin(val_rmses)
     best_alpha = alphas[best_idx]
-    print(f"Best alpha: {best_alpha} (Val RMSE: {val_rmses[best_idx]:.2f})\n")
+    print(f"Best alpha: {best_alpha} (Train: {train_rmses[best_idx]:.2f}, Val: {val_rmses[best_idx]:.2f})\n")
 
-    # Plot alpha comparison
-    plot_alpha_comparison(alphas, train_rmses, val_rmses,
-                         save_path=f"{PLOT_DIR}/alpha_comparison.png")
+    plot_alpha_comparison(alphas, train_rmses, val_rmses, save_path=f"{PLOT_DIR}/alpha_comparison.png")
 
-    # Train final model with best alpha
-    print(f"Training final model with alpha={best_alpha}...")
-    regressor = Ridge(alpha=best_alpha)
-    regressor.fit(X_train, y_train)
+    print(f"Training with alpha={best_alpha}...")
+    regressor = Ridge(alpha=best_alpha).fit(X_train, y_train)
 
-    # Evaluate on all sets
     train_preds = regressor.predict(X_train)
     val_preds = regressor.predict(X_val)
     test_preds = regressor.predict(X_test)
@@ -587,24 +467,13 @@ def train_model(daily_df, tokenizer, model, device):
     print(f"Val   RMSE: {val_rmse:.2f} people/hour  |  R² = {val_r2:.3f}")
     print(f"Test  RMSE: {test_rmse:.2f} people/hour  |  R² = {test_r2:.3f}\n")
 
-    # Check for overfitting
     train_val_gap = val_rmse - train_rmse
     val_test_gap = test_rmse - val_rmse
 
     print("Overfitting Analysis:")
-    print(f"  Train-Val gap:  {train_val_gap:+.2f} people/hour", end="")
-    if abs(train_val_gap) < 50:
-        print(" ✓ Good")
-    else:
-        print(" ⚠ Check for overfitting")
+    print(f"  Train-Val gap: {train_val_gap:+.2f} {'✓' if abs(train_val_gap) < 50 else '⚠'}")
+    print(f"  Val-Test gap:  {val_test_gap:+.2f} {'✓' if abs(val_test_gap) < 50 else '⚠'}\n")
 
-    print(f"  Val-Test gap:   {val_test_gap:+.2f} people/hour", end="")
-    if abs(val_test_gap) < 50:
-        print(" ✓ Good\n")
-    else:
-        print(" ⚠ Check generalization\n")
-
-    # Store metrics
     metrics = {
         'train_rmse': train_rmse,
         'val_rmse': val_rmse,
@@ -615,20 +484,13 @@ def train_model(daily_df, tokenizer, model, device):
         'best_alpha': best_alpha
     }
 
-    # Visualizations
     print("Generating visualizations...")
-
-    # Plot training curves
     plot_training_curves(metrics, save_path=f"{PLOT_DIR}/training_curves.png")
-
-    # Plot predictions for test set
-    plot_predictions(y_test, test_preds, dataset_name='Test',
-                    save_path=f"{PLOT_DIR}/test_predictions.png")
+    plot_predictions(y_test, test_preds, 'Test', save_path=f"{PLOT_DIR}/test_predictions.png")
 
     print(f"\nAll plots saved to '{PLOT_DIR}/' directory\n")
 
     return regressor, metrics
-
 
 def save_model(regressor, tokenizer, model, device, model_path=MODEL_PATH):
     """Save trained model"""
@@ -644,63 +506,31 @@ def save_model(regressor, tokenizer, model, device, model_path=MODEL_PATH):
 
 
 def load_model(model_path=MODEL_PATH):
-    """Load trained model with CUDA optimization"""
+    """Load trained model"""
     with open(model_path, 'rb') as f:
         model_data = pickle.load(f)
 
     regressor = model_data['regressor']
     tokenizer = model_data['tokenizer']
     bert_model = model_data['bert_model']
-
-    # Setup device - use CUDA if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Move model to device
-    bert_model.to(device)
-
-    # Set model to evaluation mode for inference
-    bert_model.eval()
+    bert_model.to(device).eval()
 
     print(f"Model loaded from {model_path}")
-    print(f"Using device: {device}")
-
-    if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-
-    print()
+    print(f"Using: {'GPU - ' + torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}\n")
 
     return regressor, tokenizer, bert_model, device
 
-
-# =============================================================================
-# PREDICTION & COMPARISON
-# =============================================================================
-
+# Prediction & Comparison
 def compare_forecasts(forecast_a, forecast_b, regressor, tokenizer, model, device):
-    """
-    Compare two weather forecasts and predict traffic difference.
-
-    Args:
-        forecast_a: First weather forecast text
-        forecast_b: Second weather forecast text
-        regressor, tokenizer, model, device: Model components
-
-    Returns:
-        winner: 'A' or 'B'
-        pct_diff: Percentage difference
-        pred_a: Predicted traffic for forecast A
-        pred_b: Predicted traffic for forecast B
-    """
-    # Get embeddings for both forecasts
-    # Model was trained on concatenated text, so each input is embedded as-is
+    """Compare two forecasts and predict traffic difference"""
     emb_a = get_embeddings([forecast_a], tokenizer, model, device)
     emb_b = get_embeddings([forecast_b], tokenizer, model, device)
 
-    # Predict traffic
     pred_a = regressor.predict(emb_a)[0]
     pred_b = regressor.predict(emb_b)[0]
 
-    # Calculate winner and percentage difference
     if pred_a > pred_b:
         winner = 'A'
         pct_diff = ((pred_a - pred_b) / pred_b) * 100
@@ -710,11 +540,7 @@ def compare_forecasts(forecast_a, forecast_b, regressor, tokenizer, model, devic
 
     return winner, pct_diff, pred_a, pred_b
 
-
-# =============================================================================
-# MAIN WORKFLOW
-# =============================================================================
-
+# Main Workflow
 def main():
     """Main training workflow"""
 
