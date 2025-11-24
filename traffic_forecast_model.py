@@ -403,9 +403,14 @@ def compare_forecasts(forecast_a, forecast_b, regressor, tokenizer, model, devic
     emb_a = get_embeddings([forecast_a], tokenizer, model, device)
     emb_b = get_embeddings([forecast_b], tokenizer, model, device)
 
+    # Model was trained on combined embeddings (simple + LLM), so we need to
+    # concatenate the embedding with itself to match the expected 1536 dimensions
+    emb_a_combined = np.concatenate((emb_a, emb_a), axis=1)
+    emb_b_combined = np.concatenate((emb_b, emb_b), axis=1)
+
     # Predict traffic
-    pred_a = regressor.predict(emb_a)[0]
-    pred_b = regressor.predict(emb_b)[0]
+    pred_a = regressor.predict(emb_a_combined)[0]
+    pred_b = regressor.predict(emb_b_combined)[0]
 
     # Calculate winner and percentage difference
     if pred_a > pred_b:
