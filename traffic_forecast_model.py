@@ -252,27 +252,53 @@ def load_or_generate_data():
 # =============================================================================
 
 def setup_bert():
-    """Load BERT model and tokenizer"""
+    """Load BERT model and tokenizer with CUDA optimization"""
     print("Loading DistilBERT model...")
     tokenizer = DistilBertTokenizer.from_pretrained(BERT_MODEL)
     model = DistilBertModel.from_pretrained(BERT_MODEL)
+
+    # Setup device - use CUDA if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Display device information
+    if torch.cuda.is_available():
+        print(f"CUDA is available!")
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA Version: {torch.version.cuda}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        print("CUDA not available, using CPU")
+
+    # Move model to device
     model.to(device)
+
+    # Set model to evaluation mode for inference
+    model.eval()
+
     print(f"Using device: {device}\n")
     return tokenizer, model, device
 
 
 def get_embeddings(text_list, tokenizer, model, device):
-    """Convert texts to BERT embeddings"""
+    """Convert texts to BERT embeddings with CUDA optimization"""
     inputs = tokenizer(text_list, padding=True, truncation=True,
                       max_length=MAX_TOKEN_LENGTH, return_tensors="pt")
+
+    # Move inputs to device (GPU if available)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
+    # Disable gradient computation for inference (saves memory and speeds up)
     with torch.no_grad():
         outputs = model(**inputs)
 
     # Use CLS token as sentence representation
+    # Move to CPU before converting to numpy
     cls_embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+
+    # Clear CUDA cache if using GPU to prevent memory buildup
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+
     return cls_embeddings
 
 
@@ -362,18 +388,30 @@ def save_model(regressor, tokenizer, model, device, model_path=MODEL_PATH):
 
 
 def load_model(model_path=MODEL_PATH):
-    """Load trained model"""
+    """Load trained model with CUDA optimization"""
     with open(model_path, 'rb') as f:
         model_data = pickle.load(f)
 
     regressor = model_data['regressor']
     tokenizer = model_data['tokenizer']
     bert_model = model_data['bert_model']
+
+    # Setup device - use CUDA if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Move model to device
     bert_model.to(device)
 
+    # Set model to evaluation mode for inference
+    bert_model.eval()
+
     print(f"Model loaded from {model_path}")
-    print(f"Using device: {device}\n")
+    print(f"Using device: {device}")
+
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+    print()
 
     return regressor, tokenizer, bert_model, device
 
