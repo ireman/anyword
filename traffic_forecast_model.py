@@ -16,6 +16,7 @@ from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_squared_error
 from tqdm import tqdm
 import pickle
+import os
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -27,9 +28,15 @@ warnings.filterwarnings('ignore')
 DATA_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/00492/Metro_Interstate_Traffic_Volume.csv.gz"
 BERT_MODEL = "distilbert-base-uncased"
 MODEL_PATH = "traffic_model.pkl"
+DAILY_DATA_CSV = "daily_df_llm_predictions.csv"
 BATCH_SIZE = 100
 RIDGE_ALPHA = 1.0
 TRAIN_SPLIT = 0.8
+MAX_TOKEN_LENGTH = 128
+
+# OpenAI settings for LLM forecast generation
+OPENAI_MODEL = "gpt-3.5-turbo"
+OPENAI_MAX_TOKENS = 150
 
 
 # =============================================================================
@@ -41,7 +48,12 @@ def kelvin_to_fahrenheit(k):
     return (k - 273.15) * 9/5 + 32
 
 
-def generate_simple_forecast(row):
+def describe_temp(f):
+    """Generate temperature description"""
+    return f"approx {int(f)} degrees"
+
+
+def generate_hourly_forecast(row):
     """Generate simple forecast text from hourly weather data"""
     temp_f = kelvin_to_fahrenheit(row['temp'])
     rain_text = f"{row['rain_1h']}mm rain" if row['rain_1h'] > 0 else "dry"
@@ -50,7 +62,7 @@ def generate_simple_forecast(row):
     return (
         f"Weather is {row['weather_description']}. "
         f"Clouds at {row['clouds_all']}%. Conditions: {rain_text}, {snow_text}. "
-        f"Temp is approx {int(temp_f)} degrees."
+        f"Temp is {describe_temp(temp_f)}."
     )
 
 
@@ -65,7 +77,7 @@ def generate_daily_forecast(row):
         f"Daily weather is {row['weather_description_mode']}. "
         f"Clouds average at {row['clouds_all_mean']:.0f}%. "
         f"Conditions: {rain_text}, {snow_text}. "
-        f"Min temp approx {int(temp_min_f)} degrees, Max temp approx {int(temp_max_f)} degrees."
+        f"Min temp {describe_temp(temp_min_f)}, Max temp {describe_temp(temp_max_f)}."
     )
 
 
@@ -85,6 +97,7 @@ def load_and_aggregate_data(data_path=None):
 
     Returns:
         daily_df: DataFrame with daily aggregated data
+        hourly_df: Original hourly DataFrame (for LLM generation)
     """
     if data_path is None:
         data_path = DATA_URL
@@ -110,7 +123,7 @@ def load_and_aggregate_data(data_path=None):
         original_entries_count=('date_time', 'count')
     ).reset_index()
 
-    # Generate simple forecast texts
+    # Generate simple daily forecast texts
     daily_df['forecast_text'] = daily_df.apply(generate_daily_forecast, axis=1)
 
     # Calculate normalized traffic volume (average hourly traffic per day)
@@ -120,34 +133,118 @@ def load_and_aggregate_data(data_path=None):
 
     print(f"Aggregated to {len(daily_df)} daily records\n")
 
-    return daily_df
+    return daily_df, df
 
 
-def load_llm_forecasts(daily_df, csv_path='daily_df.csv'):
+def generate_llm_forecasts(daily_df, hourly_df, api_key):
     """
-    Load pre-generated LLM forecasts from CSV if available.
+    Generate detailed LLM-based weather forecasts using OpenAI.
+    This matches the notebook implementation in cell 4.
 
     Args:
-        daily_df: DataFrame with daily data
-        csv_path: Path to CSV with LLM forecasts
+        daily_df: DataFrame with daily aggregated data
+        hourly_df: DataFrame with hourly data
+        api_key: OpenAI API key
 
     Returns:
         daily_df with 'llm_forecast_text' column added
     """
-    import os
-    if os.path.exists(csv_path):
-        print(f"Loading pre-generated LLM forecasts from {csv_path}...")
-        df_with_llm = pd.read_csv(csv_path)
-        if 'llm_forecast_text' in df_with_llm.columns:
-            daily_df['llm_forecast_text'] = df_with_llm['llm_forecast_text']
-            print(f"Loaded {len(daily_df)} LLM forecasts\n")
-        else:
-            print(f"Warning: No 'llm_forecast_text' column found in {csv_path}")
-    else:
-        print(f"No pre-generated LLM forecasts found at {csv_path}")
-        print("Using only simple forecasts\n")
+    import openai
+
+    print("Generating OpenAI LLM daily forecasts (this may take time)...")
+    print("This will generate forecasts for all 1,860 days...")
+
+    openai_client = openai.OpenAI(api_key=api_key)
+    llm_forecasts = []
+
+    for index, row in tqdm(daily_df.iterrows(), total=len(daily_df)):
+        current_date = row['date']
+
+        # Get hourly data for this date
+        hourly_data = hourly_df[hourly_df['date'] == current_date].copy()
+
+        # Build hourly narrative
+        hourly_narrative = []
+        for _, hr_row in hourly_data.iterrows():
+            hour = pd.to_datetime(hr_row['date_time']).hour
+            hr_temp_f = kelvin_to_fahrenheit(hr_row['temp'])
+            hr_clouds = hr_row['clouds_all']
+            hr_weather_desc = hr_row['weather_description']
+            hr_rain_text = f"{hr_row['rain_1h']}mm rain" if hr_row['rain_1h'] > 0 else "no rain"
+            hr_snow_text = f"{hr_row['snow_1h']}mm snow" if hr_row['snow_1h'] > 0 else "no snow"
+
+            hourly_narrative.append(
+                f"At {hour:02d}:00, the temperature was {int(hr_temp_f)}°F, with {hr_clouds}% clouds. "
+                f"Conditions were '{hr_weather_desc}', and there was {hr_rain_text} and {hr_snow_text}."
+            )
+
+        full_hourly_narrative = "\n".join(hourly_narrative)
+
+        # Create prompt
+        prompt_message = (
+            f"Generate a detailed daily weather forecast transcript. "
+            f"Base this forecast on the following hourly weather details:\n\n"
+            f"{full_hourly_narrative}\n\n"
+            f"Provide a comprehensive narrative forecast that describes weather transitions throughout the day. "
+            f"Only output the forecast text, without any conversational elements, leading phrases (e.g., 'Here is your forecast'), "
+            f"or concluding remarks. Start directly with the forecast narrative."
+        )
+
+        try:
+            response = openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a helpful weather forecaster who provides concise and detailed weather narratives without conversational filler. Only provide the forecast text."},
+                    {"role": "user", "content": prompt_message}
+                ],
+                max_tokens=OPENAI_MAX_TOKENS,
+                temperature=0.0
+            )
+            generated_text = response.choices[0].message.content
+        except Exception as e:
+            generated_text = f'Error generating forecast for {current_date}: {e}'
+
+        llm_forecasts.append(generated_text)
+
+    # Add to dataframe
+    daily_df['llm_forecast_text'] = llm_forecasts
+
+    # Save to CSV
+    daily_df.to_csv(DAILY_DATA_CSV, index=False)
+    print(f"\nSaved daily data with LLM forecasts to {DAILY_DATA_CSV}\n")
 
     return daily_df
+
+
+def load_or_generate_data():
+    """
+    Load pre-existing daily data with LLM forecasts, or generate if not found.
+    """
+    if os.path.exists(DAILY_DATA_CSV):
+        print(f"Loading pre-generated data from {DAILY_DATA_CSV}...")
+        daily_df = pd.read_csv(DAILY_DATA_CSV)
+        daily_df['date'] = pd.to_datetime(daily_df['date'])
+        print(f"Loaded {len(daily_df)} daily records with LLM forecasts\n")
+        return daily_df
+    else:
+        print(f"{DAILY_DATA_CSV} not found.")
+        print("Need to generate LLM forecasts...")
+
+        # Check for OpenAI API key
+        api_key = os.environ.get('OPENAI_API_KEY')
+        if not api_key:
+            print("\nERROR: OPENAI_API_KEY environment variable not set.")
+            print("Please set it: export OPENAI_API_KEY='your-key-here'")
+            print("\nOr place daily_df_llm_predictions.csv in the current directory.")
+            raise ValueError("Missing OPENAI_API_KEY and no pre-generated data found")
+
+        # Load and aggregate data
+        daily_df, hourly_df = load_and_aggregate_data()
+
+        # Generate LLM forecasts
+        daily_df = generate_llm_forecasts(daily_df, hourly_df, api_key)
+
+        return daily_df
 
 
 # =============================================================================
@@ -168,7 +265,7 @@ def setup_bert():
 def get_embeddings(text_list, tokenizer, model, device):
     """Convert texts to BERT embeddings"""
     inputs = tokenizer(text_list, padding=True, truncation=True,
-                      max_length=128, return_tensors="pt")
+                      max_length=MAX_TOKEN_LENGTH, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
@@ -191,10 +288,10 @@ def generate_embeddings_batched(texts, tokenizer, model, device, batch_size=BATC
 
 def train_model(daily_df, tokenizer, model, device):
     """
-    Train traffic prediction model.
+    Train traffic prediction model using combined embeddings.
 
     Args:
-        daily_df: DataFrame with daily data (must have 'forecast_text')
+        daily_df: DataFrame with daily data (must have 'forecast_text' and 'llm_forecast_text')
         tokenizer, model, device: BERT components
 
     Returns:
@@ -211,18 +308,15 @@ def train_model(daily_df, tokenizer, model, device):
     X_simple = generate_embeddings_batched(texts_simple, tokenizer, model, device)
     print(f"Simple embeddings shape: {X_simple.shape}\n")
 
-    # Check for LLM forecasts and combine if available
-    if 'llm_forecast_text' in daily_df.columns:
-        print("Generating embeddings from LLM forecast texts...")
-        texts_llm = daily_df['llm_forecast_text'].fillna("").tolist()
-        X_llm = generate_embeddings_batched(texts_llm, tokenizer, model, device)
-        print(f"LLM embeddings shape: {X_llm.shape}\n")
+    # Generate embeddings from LLM forecasts
+    print("Generating embeddings from LLM forecast texts...")
+    texts_llm = daily_df['llm_forecast_text'].fillna("").tolist()
+    X_llm = generate_embeddings_batched(texts_llm, tokenizer, model, device)
+    print(f"LLM embeddings shape: {X_llm.shape}\n")
 
-        # Combine both embeddings
-        X = np.concatenate((X_simple, X_llm), axis=1)
-        print(f"Combined embeddings shape: {X.shape}\n")
-    else:
-        X = X_simple
+    # Combine both embeddings
+    X = np.concatenate((X_simple, X_llm), axis=1)
+    print(f"Combined embeddings shape: {X.shape}\n")
 
     # Target variable
     y = daily_df['normalized_traffic_volume'].values
@@ -335,11 +429,8 @@ def main():
     print("TRAFFIC FORECAST MODEL")
     print("="*60 + "\n")
 
-    # Load and process data
-    daily_df = load_and_aggregate_data()
-
-    # Load pre-generated LLM forecasts if available
-    daily_df = load_llm_forecasts(daily_df)
+    # Load or generate daily data with LLM forecasts
+    daily_df = load_or_generate_data()
 
     # Setup BERT
     tokenizer, bert_model, device = setup_bert()
