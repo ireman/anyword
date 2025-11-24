@@ -288,7 +288,7 @@ def generate_embeddings_batched(texts, tokenizer, model, device, batch_size=BATC
 
 def train_model(daily_df, tokenizer, model, device):
     """
-    Train traffic prediction model using combined embeddings.
+    Train traffic prediction model using combined text embeddings.
 
     Args:
         daily_df: DataFrame with daily data (must have 'forecast_text' and 'llm_forecast_text')
@@ -302,20 +302,18 @@ def train_model(daily_df, tokenizer, model, device):
     print("TRAINING MODEL")
     print("="*60 + "\n")
 
-    # Generate embeddings from simple forecasts
-    print("Generating embeddings from simple forecast texts...")
+    # Concatenate simple and LLM forecast texts BEFORE embedding
+    print("Combining simple and LLM forecast texts...")
     texts_simple = daily_df['forecast_text'].fillna("").tolist()
-    X_simple = generate_embeddings_batched(texts_simple, tokenizer, model, device)
-    print(f"Simple embeddings shape: {X_simple.shape}\n")
-
-    # Generate embeddings from LLM forecasts
-    print("Generating embeddings from LLM forecast texts...")
     texts_llm = daily_df['llm_forecast_text'].fillna("").tolist()
-    X_llm = generate_embeddings_batched(texts_llm, tokenizer, model, device)
-    print(f"LLM embeddings shape: {X_llm.shape}\n")
 
-    # Combine both embeddings
-    X = np.concatenate((X_simple, X_llm), axis=1)
+    # Concatenate both texts into single strings
+    combined_texts = [f"{simple} {llm}" for simple, llm in zip(texts_simple, texts_llm)]
+    print(f"Combined {len(combined_texts)} text pairs\n")
+
+    # Generate embeddings from combined texts
+    print("Generating embeddings from combined forecast texts...")
+    X = generate_embeddings_batched(combined_texts, tokenizer, model, device)
     print(f"Combined embeddings shape: {X.shape}\n")
 
     # Target variable
@@ -400,17 +398,13 @@ def compare_forecasts(forecast_a, forecast_b, regressor, tokenizer, model, devic
         pred_b: Predicted traffic for forecast B
     """
     # Get embeddings for both forecasts
+    # Model was trained on concatenated text, so each input is embedded as-is
     emb_a = get_embeddings([forecast_a], tokenizer, model, device)
     emb_b = get_embeddings([forecast_b], tokenizer, model, device)
 
-    # Model was trained on combined embeddings (simple + LLM), so we need to
-    # concatenate the embedding with itself to match the expected 1536 dimensions
-    emb_a_combined = np.concatenate((emb_a, emb_a), axis=1)
-    emb_b_combined = np.concatenate((emb_b, emb_b), axis=1)
-
     # Predict traffic
-    pred_a = regressor.predict(emb_a_combined)[0]
-    pred_b = regressor.predict(emb_b_combined)[0]
+    pred_a = regressor.predict(emb_a)[0]
+    pred_b = regressor.predict(emb_b)[0]
 
     # Calculate winner and percentage difference
     if pred_a > pred_b:
