@@ -79,7 +79,7 @@ Incorporate time-based features to capture traffic patterns:
 
 ### 2. Fine-Tuned Language Models
 Move beyond using transformers solely as embedding generators:
-- Fine-tune a language model (e.g., BERT, GPT) specifically for the weather-to-traffic prediction task
+- Fine-tune a language model (e.g., claude, GPT) specifically for the weather-to-traffic prediction task
 - Train end-to-end: text input → direct traffic volume output
 - Alternatively, use knowledge distillation to create a specialized smaller model
 
@@ -129,11 +129,6 @@ A production-grade system would benefit from:
 - Access to proprietary weather forecast data
 - Integration with city traffic management systems
 
-## Conclusion
-
-This project demonstrates a functional approach to comparing weather forecasts for traffic prediction using modern NLP techniques. While the current model achieves reasonable performance (~17% error), the identified limitations—particularly the lack of temporal context and naturally-written forecast data—represent significant opportunities for improvement.
-
-The model serves as a proof-of-concept that textual weather descriptions can inform traffic predictions, but achieving production-level accuracy would require the advanced techniques and richer datasets outlined in the future research directions.
 
 ---
 
